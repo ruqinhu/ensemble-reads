@@ -1,6 +1,7 @@
 package com.ensemblereads.app.book
 
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.jsoup.parser.Parser
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -56,12 +57,25 @@ object EpubParser {
         for (name in wantedNames) {
             val raw = contentEntries[name] ?: continue
             val doc = runCatching { Jsoup.parse(raw.toString(Charsets.UTF_8)) }.getOrNull() ?: continue
-            val text = doc.body().text().trim()
+            val text = extractText(doc)
             if (text.isBlank()) continue // 图片等无文本资源
             val heading = doc.select("h1,h2,h3").firstOrNull()?.text() ?: "第${chapterIndex + 1}节"
             chapters.add(ParsedChapter(chapterIndex++, heading, text))
         }
         return title to chapters
+    }
+
+    /** 取正文文本：块级/段落元素之间保留换行，避免整章坍缩成一段。 */
+    private fun extractText(doc: Document): String {
+        val sb = StringBuilder()
+        doc.body().select("p,div,h1,h2,h3,li,blockquote").forEach { el ->
+            val t = el.text().trim()
+            if (t.isNotEmpty()) {
+                if (sb.isNotEmpty()) sb.append('\n')
+                sb.append(t)
+            }
+        }
+        return sb.toString().trim()
     }
 
     /** 遍历 zip，仅解压满足 filter 的条目（防止把图片/字体等大资源全解进内存）。 */
@@ -113,8 +127,16 @@ object EpubParser {
                     continue
                 }
             }
-            out.write(c.code)
-            i++
+            // 非 %XX 的一段字符整体按 UTF-8 写入，避免多字节中文文件名被单字节截断
+            val runStart = i
+            while (i < s.length) {
+                val cc = s[i]
+                val isEncoded = cc == '%' && i + 2 < s.length &&
+                    Character.digit(s[i + 1], 16) >= 0 && Character.digit(s[i + 2], 16) >= 0
+                if (isEncoded) break
+                i++
+            }
+            out.write(s.substring(runStart, i).toByteArray(Charsets.UTF_8))
         }
         return out.toByteArray().toString(Charsets.UTF_8)
     }

@@ -22,6 +22,11 @@ suspend fun importBook(context: Context, uri: Uri, container: AppContainer): Lon
             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
         } ?: "未命名"
 
+        // 同一 uri 已导入过：去重返回既有书籍 id
+        container.bookRepo.all().firstOrNull { it.filePath == uri.toString() }?.let {
+            return@withContext it.id
+        }
+
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: error("无法打开文件")
         val isEpub = displayName.endsWith(".epub", true)

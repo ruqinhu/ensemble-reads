@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ensemblereads.app.data.db.SegmentEntity
+import com.ensemblereads.app.player.AudioPlaybackService
 import com.ensemblereads.app.player.PlaybackController
 import kotlinx.coroutines.flow.collectLatest
 
@@ -92,11 +93,12 @@ fun ReaderScreen(
             }
         } else {
             // 尚无解析段（未配引擎 / 合成未完成）：直接展示原文
+            val lines = remember(content) { content.split('\n').filter { it.isNotBlank() } }
             LazyColumn(
                 Modifier.fillMaxSize().padding(pad),
                 contentPadding = contentPadding,
             ) {
-                items(content.split('\n').filter { it.isNotBlank() }) { line ->
+                items(lines) { line ->
                     Text(
                         line,
                         style = MaterialTheme.typography.bodyLarge,
@@ -110,7 +112,7 @@ fun ReaderScreen(
 
 @Composable
 fun PlaybackBar(controller: PlaybackController) {
-    var speed by remember { mutableFloatStateOf(1f) }
+    var speed by remember { mutableFloatStateOf(AudioPlaybackService.currentSpeed()) }
     var playing by remember { mutableStateOf(true) }
     Surface(shadowElevation = 8.dp) {
         Row(
@@ -129,6 +131,18 @@ fun PlaybackBar(controller: PlaybackController) {
                 )
             }
             IconButton(onClick = { controller.nextSeg() }) { Icon(Icons.Default.SkipNext, contentDescription = "下一句") }
+            var sleepMinutes by remember { mutableIntStateOf(0) }
+            val sleepOptions = intArrayOf(0, 15, 30, 60)
+            TextButton(onClick = {
+                val next = sleepOptions[(sleepOptions.indexOf(sleepMinutes) + 1) % sleepOptions.size]
+                sleepMinutes = next
+                controller.sleepTimer(next)
+            }) {
+                Text(
+                    if (sleepMinutes == 0) "☾" else "☾${sleepMinutes}m",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("${(speed * 10).toInt() / 10f}x", style = MaterialTheme.typography.labelMedium)
                 Slider(

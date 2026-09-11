@@ -35,7 +35,7 @@ object RoleAllocator {
         "俏皮" to (10 to 5), "焦急" to (15 to 8),
     )
 
-    /** 段落语气 → (rate%, pitchHz)。 */
+    /** 段落语气 → (rate, pitch) 百分比，由 TTS 引擎解释。 */
     fun toneParams(tone: String): Pair<Int, Int> = TONE[tone] ?: (0 to 0)
 
     private fun featureOf(segments: List<Segment>, speaker: String): Triple<String, String, String> {
@@ -55,9 +55,12 @@ object RoleAllocator {
         val map = mutableMapOf<String, Voice>()
         val used = mutableSetOf<String>()
 
-        // 旁白
+        // 旁白（按叙事语气众数应用语速/音高）
         val narr = pickNarratorVoice(segments)
-        map[NARRATOR] = Voice(narr, 0, 0)
+        val narrTone = segments.filter { it.speaker == NARRATOR }.map { it.tone }
+            .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: "中性"
+        val (nRate, nPitch) = toneParams(narrTone)
+        map[NARRATOR] = Voice(narr, nPitch, nRate)
         used.add(narr)
 
         // 用户覆盖优先
@@ -72,7 +75,7 @@ object RoleAllocator {
             .sortedByDescending { it.value }
             .map { it.key }
         for (sp in sorted) {
-            val (g, a, _) = featureOf(segments, sp)
+            val (g, a, tone) = featureOf(segments, sp)
             val pool = when (g) {
                 "male" -> listOfNotNull(MALE_BY_AGE[a]).let { it + MALE_VOICES.filter { v -> v != MALE_BY_AGE[a] } }
                 "female" -> listOfNotNull(FEMALE_BY_AGE[a]).let { it + FEMALE_VOICES.filter { v -> v != FEMALE_BY_AGE[a] } }
@@ -80,7 +83,8 @@ object RoleAllocator {
             }
             var voice = pool.firstOrNull { it !in used } ?: FALLBACK_VOICE
             if (voice in used) voice = ALL_VOICES.firstOrNull { it !in used } ?: FALLBACK_VOICE
-            map[sp] = Voice(voice, 0, 0)
+            val (rate, pitch) = toneParams(tone) // 段落级情绪：应用该角色主 tone 的语速/音高
+            map[sp] = Voice(voice, pitch, rate)
             used.add(voice)
         }
         return map

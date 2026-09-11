@@ -1,6 +1,8 @@
 package com.ensemblereads.app.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,6 +17,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -36,6 +39,7 @@ import com.ensemblereads.app.ui.roles.RolesScreen
 import com.ensemblereads.app.ui.settings.SettingsScreen
 import com.ensemblereads.app.ui.theme.EnsembleTheme
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 import java.io.File
 
 @Composable
@@ -52,6 +56,18 @@ fun AppRoot(container: AppContainer) {
                 if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
             } catch (e: Exception) {
                 // ForegroundServiceStartNotAllowedException 等：受限时忽略，播放时再触发
+            }
+        }
+        // Android 13+ 通知权限：后台/锁屏朗读的通知需要用户授权
+        val notifPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { }
+        LaunchedEffect(Unit) {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
 
@@ -71,9 +87,14 @@ fun AppRoot(container: AppContainer) {
         ) { uri ->
             if (uri != null) {
                 scope.launch {
-                    runCatching { importBook(context, uri, container) }
-                        .onSuccess { shelfTick++ }
-                        .onFailure { Toast.makeText(context, "导入失败：${it.message}", Toast.LENGTH_LONG).show() }
+                    try {
+                        importBook(context, uri, container)
+                        shelfTick++
+                    } catch (e: CancellationException) {
+                        throw e // 导入协程被取消：不弹误导提示
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "导入失败：${e.message}", Toast.LENGTH_LONG).show()
+                    }
                     nav.navigate("bookshelf") { popUpTo("bookshelf") { inclusive = false }; launchSingleTop = true }
                 }
             }
@@ -171,10 +192,11 @@ fun AppRoot(container: AppContainer) {
                     segments = segments,
                     container = container,
                     onRolesChanged = {
-                        // 用户改了角色音色：重置该章并重新合成（后台）
+                        // 用户改了角色音色：先暂停播放（避免删除正在播放的音频），再重置重合成
                         scope.launch {
                             val b = book ?: return@launch
                             val ch = container.chapterRepo.byBookAndId(bookId, chapterId) ?: return@launch
+                            AudioPlaybackService.instance?.pause()
                             try {
                                 syn?.resetChapter(b, ch)
                                 syn?.ensureChapter(b, ch)

@@ -36,6 +36,16 @@ class ChapterSynthesizer(
     private fun chapterDir(bookId: Long, chapterId: Long) = File(audioRoot, "$bookId/$chapterId")
     private fun segFile(bookId: Long, chapterId: Long, n: Int) = File(chapterDir(bookId, chapterId), "seg_$n.mp3")
 
+    /** 播放器回调单独 try：异常只记日志，不把已合成段误标 FAILED，也不中断后续合成。 */
+    private fun safeOnReady(onReady: ((SegmentEntity) -> Unit)?, seg: SegmentEntity) {
+        if (onReady == null) return
+        try {
+            onReady(seg)
+        } catch (e: Exception) {
+            android.util.Log.w("ChapterSynthesizer", "onReady 播放器调用失败（段 ${seg.segIndex}）", e)
+        }
+    }
+
     /**
      * 保证章内从 fromSeg 起的段就绪：先解析（或读 ParseCache），再逐段合成。
      * 每段就绪通过 [onReady] 回调即时通知（供边合成边播放）；已缓存段也会立即回调。
@@ -70,25 +80,29 @@ class ChapterSynthesizer(
         val ready = mutableListOf<SegmentEntity>()
         for (seg in segments.filter { it.segIndex >= fromSeg }) {
             if (seg.status == SegmentEntity.STATUS_READY) {
-                ready.add(seg); onReady?.invoke(seg); continue
+                ready.add(seg)
+                safeOnReady(onReady, seg)
+                continue
             }
             val v = voices[seg.speaker] ?: continue
             val dest = segFile(book.id, chapter.id, seg.segIndex)
             chapterDir(book.id, chapter.id).mkdirs()
+            var updated: SegmentEntity? = null
             try {
                 container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_SYNTHESIZING)
                 engine.synthesize(seg.text, v, dest)
                 container.segmentRepo.markReady(seg.id, dest.absolutePath, System.currentTimeMillis())
-                val updated = seg.copy(
+                updated = seg.copy(
                     status = SegmentEntity.STATUS_READY,
                     audioPath = dest.absolutePath,
                     cachedAt = System.currentTimeMillis(),
                 )
                 ready.add(updated)
-                onReady?.invoke(updated)
             } catch (e: Exception) {
                 container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_FAILED)
             }
+            // onReady 移出合成 try/catch：播放器异常不再被误标为合成失败，也不打断后续合成
+            updated?.let { safeOnReady(onReady, it) }
         }
         container.chapterRepo.setCached(chapter.id, container.segmentRepo.readyByChapter(chapter.id).isNotEmpty())
         evictIfNeeded(book)
@@ -106,16 +120,6 @@ class ChapterSynthesizer(
             val targets = chapters.drop(start + 1).take(minOf(count, budget))
             for (ch in targets) {
                 try { ensureChapter(book, ch) } catch (e: Exception) { /* 预取失败静默，等待重试 */ }
-            }
-        }
-    }
-
-    /** 批量缓存指定章节。后台执行。 */
-    fun batchCache(book: BookEntity, chapterIds: List<Long>) {
-        scope.launch {
-            val chapters = container.chapterRepo.chapters(book.id).filter { it.id in chapterIds }
-            for (ch in chapters) {
-                try { ensureChapter(book, ch) } catch (e: Exception) { /* 单章失败不影响后续 */ }
             }
         }
     }
@@ -143,8 +147,18 @@ class ChapterSynthesizer(
         }
     }
 
-    /** 重置某章（删除音频、段状态回 PARSED），用于用户改角色后重新合成。 */
-    suspend fun resetChapter(book: BookEntity, chapter: ChapterEntity) {
+    /** 记录阅读进度到 Book 表（书架"继续阅读"）。 */
+    suspend fun saveProgress(book: BookEntity) {
+        container.bookRepo.update(book)
+    }
+
+    /** 设置里配置的默认倍速（0.5~2x），未配置或非法时为 1x。 */
+    suspend fun defaultSpeed(): Float =
+        container.settings.get(SettingsManager.KEY_DEFAULT_SPEED)?.toFloatOrNull()
+            ?.takeIf { it in 0.5f..2f } ?: 1f
+
+    /** 重置某章（删除音频、段状态回 PARSED），用于用户改角色后重新合成。与 ensureChapter 同锁。 */
+    suspend fun resetChapter(book: BookEntity, chapter: ChapterEntity) = withChapterLock(chapter.id) {
         chapterDir(book.id, chapter.id).deleteRecursively()
         container.segmentRepo.byChapter(chapter.id).forEach {
             container.segmentRepo.setStatus(it.id, SegmentEntity.STATUS_PARSED)

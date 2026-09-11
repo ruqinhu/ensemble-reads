@@ -69,8 +69,16 @@ class DeepSeekClient(
         append("[{\"speaker\":\"角色名\",\"text\":\"原文片段\",\"gender\":\"...\",\"age\":\"...\",\"tone\":\"...\"}]")
     }
 
-    /** 解析一段章节文本。失败重试 1 次（指数退避），仍失败抛异常；空结果视为失败。 */
+    /** 解析一段章节文本。超长文本按段落分块解析后拼接，避免整章超 max_tokens 被截断。 */
     suspend fun parse(chapterId: Long, text: String): List<Segment> = withContext(Dispatchers.IO) {
+        val chunks = splitChunks(text, CHUNK_CHARS)
+        val all = mutableListOf<Segment>()
+        for (chunk in chunks) all += parseChunk(chapterId, chunk)
+        all
+    }
+
+    /** 单次请求：失败重试 1 次（指数退避），仍失败抛异常；空结果视为失败。 */
+    private suspend fun parseChunk(chapterId: Long, text: String): List<Segment> {
         var last: Exception? = null
         for (attempt in 0..1) {
             try {
@@ -102,7 +110,7 @@ class DeepSeekClient(
                     val segs = DeepSeekParser.parseResponse(sb.toString())
                     // 空结果（如 max_tokens 截断导致 JSON 不完整）视为失败，避免静默无声
                     if (segs.isEmpty() && text.isNotBlank()) throw RuntimeException("DeepSeek 解析结果为空")
-                    return@withContext segs
+                    return segs
                 }
             } catch (e: CancellationException) {
                 throw e // 协程取消不应被吞掉再重试
@@ -112,5 +120,26 @@ class DeepSeekClient(
             }
         }
         throw last ?: RuntimeException("DeepSeek parse failed")
+    }
+
+    /** 按段落切分，使每块 ≤ max 字符。 */
+    private fun splitChunks(text: String, max: Int): List<String> {
+        if (text.length <= max) return listOf(text)
+        val chunks = mutableListOf<String>()
+        val cur = StringBuilder()
+        for (line in text.lines()) {
+            if (cur.isNotEmpty() && cur.length + line.length + 1 > max) {
+                chunks.add(cur.toString().trim())
+                cur.setLength(0)
+            }
+            cur.append(line).append('\n')
+        }
+        if (cur.isNotBlank()) chunks.add(cur.toString().trim())
+        return chunks
+    }
+
+    private companion object {
+        /** 单次请求文本长度上限（超出按段落分块）。 */
+        const val CHUNK_CHARS = 5000
     }
 }

@@ -11,8 +11,16 @@ class SettingsManager(private val dao: SettingsDao) {
         const val KEY_CACHE_LIMIT = "cache_limit"
         const val DEFAULT_CACHE_LIMIT = "100"
     }
-    suspend fun get(key: String): String? = dao.get(key)?.value
-    suspend fun put(key: String, value: String) = dao.put(SettingsEntity(key, value))
+    suspend fun get(key: String): String? {
+        val raw = dao.get(key)?.value ?: return null
+        // DeepSeek key 在库里是密文；解密失败（如旧版明文）则原样返回
+        return if (key == KEY_DEEPSEEK_KEY) KeyStoreCipher.decrypt(raw) ?: raw else raw
+    }
+
+    suspend fun put(key: String, value: String) {
+        val stored = if (key == KEY_DEEPSEEK_KEY) KeyStoreCipher.encrypt(value) ?: value else value
+        dao.put(SettingsEntity(key, stored))
+    }
     /** 可观察的完整设置表：保存后 UI 即时感知，无需重启。 */
     fun all(): Flow<List<SettingsEntity>> = dao.allFlow()
 }

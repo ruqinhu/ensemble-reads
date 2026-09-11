@@ -1,6 +1,10 @@
 package com.ensemblereads.app.tts
 
+import kotlinx.coroutines.runBlocking
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.fail
 import org.junit.Test
 
 class DeepSeekClientTest {
@@ -30,5 +34,42 @@ class DeepSeekClientTest {
     @Test fun handlesSurroundingText() {
         val raw = "好的：\n[{\"speaker\":\"妈妈\",\"text\":\"到了吗\",\"gender\":\"female\",\"age\":\"中年\",\"tone\":\"温柔\"}]\n完毕"
         assertEquals("妈妈", DeepSeekParser.parseResponse(raw)[0].speaker)
+    }
+
+    @Test fun retriesThenSucceeds() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(500).setBody("err"))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"content":[{"type":"text","text":"[{\"speaker\":\"旁白\",\"text\":\"ok\",\"gender\":\"unknown\",\"age\":\"未知\",\"tone\":\"中性\"}]"}]}""",
+            ),
+        )
+        server.start()
+        try {
+            val client = DeepSeekClient("k", server.url("/").toString())
+            val segs = client.parse(1, "text")
+            assertEquals(1, segs.size)
+            assertEquals("旁白", segs[0].speaker)
+            assertEquals(2, server.requestCount) // 500 后重试成功
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test fun emptyResultThrows() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"content":[{"type":"text","text":"出错了"}]}"""))
+        server.start()
+        try {
+            val client = DeepSeekClient("k", server.url("/").toString())
+            try {
+                client.parse(1, "text")
+                fail("应当抛 RuntimeException")
+            } catch (e: RuntimeException) {
+                // 预期：空解析结果视为失败
+            }
+        } finally {
+            server.shutdown()
+        }
     }
 }

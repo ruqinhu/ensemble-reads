@@ -2,6 +2,8 @@ package com.ensemblereads.app.data.repo
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.ensemblereads.app.data.SettingsManager
 import com.ensemblereads.app.data.db.AppDatabase
 import com.ensemblereads.app.data.db.BookDao
@@ -44,11 +46,18 @@ class SegmentRepo(private val dao: SegmentDao) {
     suspend fun deleteByBook(bookId: Long) = dao.deleteByBook(bookId)
 }
 
+/** v1→v2：清理历史重复段（并发 bug 遗留）后建 (chapterId,segIndex) 唯一索引，保留用户数据。 */
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("DELETE FROM segment WHERE id NOT IN (SELECT MIN(id) FROM segment GROUP BY chapterId, segIndex)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_segment_chapterId_segIndex ON segment(chapterId, segIndex)")
+    }
+}
+
 /** 手动依赖注入容器。 */
 class AppContainer(appContext: Context) {
     val db: AppDatabase = Room.databaseBuilder(appContext, AppDatabase::class.java, "ensemble.db")
-        // MVP：v1→v2 无迁移路径，直接重建（开发期可接受）
-        .fallbackToDestructiveMigration()
+        .addMigrations(MIGRATION_1_2)
         .build()
     val bookRepo = BookRepo(db.bookDao())
     val chapterRepo = ChapterRepo(db.chapterDao())
