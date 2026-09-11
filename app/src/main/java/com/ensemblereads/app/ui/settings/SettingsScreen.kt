@@ -73,8 +73,8 @@ fun SettingsScreen(container: AppContainer, synthesizer: ChapterSynthesizer?) {
         }
         Button(onClick = {
             scope.launch {
-                container.settings.put(SettingsManager.KEY_DEEPSEEK_KEY, key)
-                container.settings.put(SettingsManager.KEY_CACHE_LIMIT, cacheLimit)
+                container.settings.put(SettingsManager.KEY_DEEPSEEK_KEY, key.trim())
+                container.settings.put(SettingsManager.KEY_CACHE_LIMIT, cacheLimit.trim())
                 container.settings.put(SettingsManager.KEY_DEFAULT_SPEED, speed.toString())
                 Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
             }

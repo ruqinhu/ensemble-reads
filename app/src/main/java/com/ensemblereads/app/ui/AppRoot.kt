@@ -73,7 +73,8 @@ fun AppRoot(container: AppContainer) {
 
         // 引擎依赖 DeepSeek key（跟随设置 Flow，保存后无需重启即生效）
         val settings by container.settings.all().collectAsState(initial = emptyList())
-        val apiKey = settings.firstOrNull { it.key == SettingsManager.KEY_DEEPSEEK_KEY }?.value?.takeIf { it.isNotBlank() }
+        val apiKey = settings.firstOrNull { it.key == SettingsManager.KEY_DEEPSEEK_KEY }?.value
+            ?.trim()?.takeIf { it.isNotBlank() }
         val engine = remember(apiKey) { apiKey?.let { DeepSeekTtsEngine(it) } }
         val synthesizer = remember(engine) {
             engine?.let { ChapterSynthesizer(container, it, File(context.filesDir, "audio")) }

@@ -3,6 +3,7 @@ package com.ensemblereads.app.data
 import com.ensemblereads.app.data.db.SettingsDao
 import com.ensemblereads.app.data.db.SettingsEntity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 class SettingsManager(private val dao: SettingsDao) {
     companion object {
@@ -21,6 +22,10 @@ class SettingsManager(private val dao: SettingsDao) {
         val stored = if (key == KEY_DEEPSEEK_KEY) KeyStoreCipher.encrypt(value) ?: value else value
         dao.put(SettingsEntity(key, stored))
     }
-    /** 可观察的完整设置表：保存后 UI 即时感知，无需重启。 */
-    fun all(): Flow<List<SettingsEntity>> = dao.allFlow()
+    /** 可观察的完整设置表：保存后 UI 即时感知，无需重启。DeepSeek key 先解密再发出。 */
+    fun all(): Flow<List<SettingsEntity>> = dao.allFlow().map { list ->
+        list.map { e ->
+            if (e.key == KEY_DEEPSEEK_KEY) e.copy(value = KeyStoreCipher.decrypt(e.value) ?: e.value) else e
+        }
+    }
 }

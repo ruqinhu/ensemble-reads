@@ -93,7 +93,8 @@ class DeepSeekClient(
                 }.toString()
                 val req = Request.Builder()
                     .url("$baseUrl/v1/messages")
-                    .addHeader("Authorization", "Bearer $apiKey")
+                    // 方舟 Anthropic 兼容端点用 x-api-key 鉴权（同 PoC 的官方 Anthropic SDK），不能用 OpenAI 风格 Bearer
+                    .addHeader("x-api-key", apiKey)
                     .addHeader("anthropic-version", "2023-06-01")
                     .addHeader("Content-Type", "application/json")
                     .post(body.toRequestBody("application/json".toMediaType()))
