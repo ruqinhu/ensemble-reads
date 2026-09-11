@@ -2,6 +2,7 @@ package com.ensemblereads.app.data.repo
 
 import android.content.Context
 import androidx.room.Room
+import com.ensemblereads.app.data.SettingsManager
 import com.ensemblereads.app.data.db.AppDatabase
 import com.ensemblereads.app.data.db.BookDao
 import com.ensemblereads.app.data.db.BookEntity
@@ -45,7 +46,10 @@ class SegmentRepo(private val dao: SegmentDao) {
 
 /** 手动依赖注入容器。 */
 class AppContainer(appContext: Context) {
-    val db: AppDatabase = Room.databaseBuilder(appContext, AppDatabase::class.java, "ensemble.db").build()
+    val db: AppDatabase = Room.databaseBuilder(appContext, AppDatabase::class.java, "ensemble.db")
+        // MVP：v1→v2 无迁移路径，直接重建（开发期可接受）
+        .fallbackToDestructiveMigration()
+        .build()
     val bookRepo = BookRepo(db.bookDao())
     val chapterRepo = ChapterRepo(db.chapterDao())
     val roleRepo = RoleRepo(db.roleDao())

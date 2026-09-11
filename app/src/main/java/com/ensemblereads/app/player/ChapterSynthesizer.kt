@@ -12,9 +12,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /** 章节合成器：解析→分配→逐段合成（边听边缓存），支持预取、批量缓存与超限淘汰。 */
 class ChapterSynthesizer(
@@ -24,14 +27,26 @@ class ChapterSynthesizer(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** 每章一把锁：防止同一章被并发合成（reader 自动播放 + 角色重合成 + 预取）产生重复段或写坏音频。 */
+    private val chapterLocks = ConcurrentHashMap<Long, Mutex>()
+
+    private suspend fun <T> withChapterLock(chapterId: Long, block: suspend () -> T): T =
+        chapterLocks.computeIfAbsent(chapterId) { Mutex() }.withLock { block() }
+
     private fun chapterDir(bookId: Long, chapterId: Long) = File(audioRoot, "$bookId/$chapterId")
     private fun segFile(bookId: Long, chapterId: Long, n: Int) = File(chapterDir(bookId, chapterId), "seg_$n.mp3")
 
     /**
-     * 保证章内 [fromSeg..] 段就绪：先解析（或读 ParseCache），再逐段合成。
-     * 返回就绪段列表（按 segIndex 排序）。边合成边可播放。
+     * 保证章内从 fromSeg 起的段就绪：先解析（或读 ParseCache），再逐段合成。
+     * 每段就绪通过 [onReady] 回调即时通知（供边合成边播放）；已缓存段也会立即回调。
+     * 返回就绪段列表（按 segIndex 排序）。整章在章节锁内串行执行。
      */
-    suspend fun ensureChapter(book: BookEntity, chapter: ChapterEntity, fromSeg: Int = 0): List<SegmentEntity> {
+    suspend fun ensureChapter(
+        book: BookEntity,
+        chapter: ChapterEntity,
+        fromSeg: Int = 0,
+        onReady: ((SegmentEntity) -> Unit)? = null,
+    ): List<SegmentEntity> = withChapterLock(chapter.id) {
         val existing = container.segmentRepo.byChapter(chapter.id)
         var segments = existing
         if (existing.isEmpty()) {
@@ -54,7 +69,9 @@ class ChapterSynthesizer(
         val voices = engine.allocateVoices(segments.map { it.toTtsSegment() }, roles)
         val ready = mutableListOf<SegmentEntity>()
         for (seg in segments.filter { it.segIndex >= fromSeg }) {
-            if (seg.status == SegmentEntity.STATUS_READY) { ready.add(seg); continue }
+            if (seg.status == SegmentEntity.STATUS_READY) {
+                ready.add(seg); onReady?.invoke(seg); continue
+            }
             val v = voices[seg.speaker] ?: continue
             val dest = segFile(book.id, chapter.id, seg.segIndex)
             chapterDir(book.id, chapter.id).mkdirs()
@@ -62,14 +79,20 @@ class ChapterSynthesizer(
                 container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_SYNTHESIZING)
                 engine.synthesize(seg.text, v, dest)
                 container.segmentRepo.markReady(seg.id, dest.absolutePath, System.currentTimeMillis())
-                ready.add(seg.copy(status = SegmentEntity.STATUS_READY, audioPath = dest.absolutePath, cachedAt = System.currentTimeMillis()))
+                val updated = seg.copy(
+                    status = SegmentEntity.STATUS_READY,
+                    audioPath = dest.absolutePath,
+                    cachedAt = System.currentTimeMillis(),
+                )
+                ready.add(updated)
+                onReady?.invoke(updated)
             } catch (e: Exception) {
                 container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_FAILED)
             }
         }
         container.chapterRepo.setCached(chapter.id, container.segmentRepo.readyByChapter(chapter.id).isNotEmpty())
         evictIfNeeded(book)
-        return ready
+        ready
     }
 
     /** 预取 [startChapterId] 之后的 count 章（受缓存上限约束）。后台执行。 */
@@ -89,8 +112,8 @@ class ChapterSynthesizer(
 
     /** 批量缓存指定章节。后台执行。 */
     fun batchCache(book: BookEntity, chapterIds: List<Long>) {
-        val chapters = container.chapterRepo.chapters(book.id).filter { it.id in chapterIds }
         scope.launch {
+            val chapters = container.chapterRepo.chapters(book.id).filter { it.id in chapterIds }
             for (ch in chapters) {
                 try { ensureChapter(book, ch) } catch (e: Exception) { /* 单章失败不影响后续 */ }
             }

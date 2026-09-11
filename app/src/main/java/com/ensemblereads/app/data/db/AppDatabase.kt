@@ -8,7 +8,7 @@ import androidx.room.RoomDatabase
         BookEntity::class, ChapterEntity::class, RoleEntity::class,
         SegmentEntity::class, ParseCacheEntity::class, SettingsEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {

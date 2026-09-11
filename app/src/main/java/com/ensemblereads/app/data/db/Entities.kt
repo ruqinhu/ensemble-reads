@@ -1,6 +1,7 @@
 package com.ensemblereads.app.data.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "book")
@@ -36,7 +37,11 @@ data class RoleEntity(
     val rate: Int = 0,
 )
 
-@Entity(tableName = "segment")
+@Entity(
+    tableName = "segment",
+    // 唯一索引：防止并发 ensureChapter 对同一章重复插入分段
+    indices = [Index(value = ["chapterId", "segIndex"], unique = true)],
+)
 data class SegmentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val chapterId: Long,

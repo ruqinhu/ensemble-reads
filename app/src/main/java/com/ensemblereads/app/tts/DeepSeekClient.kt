@@ -1,6 +1,8 @@
 package com.ensemblereads.app.tts
 
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -8,6 +10,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 /** 容错解析 DeepSeek 响应文本为 [Segment] 列表。纯函数，便于单测。 */
 object DeepSeekParser {
@@ -47,7 +50,12 @@ class DeepSeekClient(
     private val apiKey: String,
     private val baseUrl: String = "https://ark.cn-beijing.volces.com/api/coding",
 ) {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(120, TimeUnit.SECONDS)
+        .build()
 
     private val systemPrompt = buildString {
         append("你是一个中文小说「多角色朗读」的角色解析器。\n")
@@ -61,7 +69,7 @@ class DeepSeekClient(
         append("[{\"speaker\":\"角色名\",\"text\":\"原文片段\",\"gender\":\"...\",\"age\":\"...\",\"tone\":\"...\"}]")
     }
 
-    /** 解析一段章节文本。失败重试 1 次，仍失败抛异常。 */
+    /** 解析一段章节文本。失败重试 1 次（指数退避），仍失败抛异常；空结果视为失败。 */
     suspend fun parse(chapterId: Long, text: String): List<Segment> = withContext(Dispatchers.IO) {
         var last: Exception? = null
         for (attempt in 0..1) {
@@ -69,7 +77,7 @@ class DeepSeekClient(
                 val body = JSONObject().apply {
                     put("model", "deepseek-v4-flash")
                     put("system", systemPrompt)
-                    put("max_tokens", 8192)
+                    put("max_tokens", 16000)
                     put("messages", JSONArray().put(JSONObject().apply {
                         put("role", "user")
                         put("content", "请解析下面的小说文本：\n\n$text")
@@ -91,10 +99,16 @@ class DeepSeekClient(
                         val b = content.optJSONObject(i)
                         if (b?.optString("type") == "text") sb.append(b.optString("text"))
                     }
-                    return@withContext DeepSeekParser.parseResponse(sb.toString())
+                    val segs = DeepSeekParser.parseResponse(sb.toString())
+                    // 空结果（如 max_tokens 截断导致 JSON 不完整）视为失败，避免静默无声
+                    if (segs.isEmpty() && text.isNotBlank()) throw RuntimeException("DeepSeek 解析结果为空")
+                    return@withContext segs
                 }
+            } catch (e: CancellationException) {
+                throw e // 协程取消不应被吞掉再重试
             } catch (e: Exception) {
                 last = e
+                delay(500L * (attempt + 1)) // 指数退避
             }
         }
         throw last ?: RuntimeException("DeepSeek parse failed")

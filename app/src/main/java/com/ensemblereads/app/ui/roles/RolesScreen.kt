@@ -13,9 +13,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -50,9 +50,8 @@ fun RolesScreen(
     onDone: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val existingRoles by produceState<List<RoleEntity>>(initialValue = emptyList()) {
-        value = container.roleRepo.byBook(bookId)
-    }
+    var roles by remember { mutableStateOf<List<RoleEntity>>(emptyList()) }
+    LaunchedEffect(bookId) { roles = container.roleRepo.byBook(bookId) }
     var editing by remember { mutableStateOf<String?>(null) }
 
     val counts = segments.groupingBy { it.speaker }.eachCount()
@@ -61,8 +60,7 @@ fun RolesScreen(
     LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
         item { Text("角色配置", style = MaterialTheme.typography.headlineLarge) }
         items(counts) { (name, count) ->
-            val role = existingRoles.firstOrNull { it.roleName == name }
-            val assigned = role != null || name == RoleAllocator.NARRATOR
+            val role = roles.firstOrNull { it.roleName == name }
             ListItem(
                 headlineContent = { Text(name) },
                 supportingContent = {
@@ -76,7 +74,8 @@ fun RolesScreen(
                 },
                 trailingContent = { Text("$count 次") },
                 modifier = Modifier.clickable {
-                    if (!assigned) editing = name
+                    // 旁白自动分配；其余角色（含已分配）均可改音色
+                    if (name != RoleAllocator.NARRATOR) editing = name
                 },
             )
         }
@@ -96,6 +95,7 @@ fun RolesScreen(
                             scope.launch {
                                 container.roleRepo.upsert(
                                     RoleEntity(bookId = bookId, roleName = name, voice = id))
+                                roles = container.roleRepo.byBook(bookId) // 立即刷新列表
                                 editing = null
                                 onRolesChanged()
                             }

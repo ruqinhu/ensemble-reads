@@ -1,8 +1,10 @@
 package com.ensemblereads.app.tts
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -10,6 +12,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
@@ -18,12 +21,14 @@ import kotlin.coroutines.resume
  * 收二进制 audio 写文件。
  */
 class EdgeTtsClient {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder().readTimeout(30, TimeUnit.SECONDS).build()
 
     companion object {
         const val TRUSTED_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val WSS =
             "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+        /** 单段合成看门狗：超时即取消连接，防止 WS 悬挂阻塞整条合成管线。 */
+        private const val SINGLE_TIMEOUT_MS = 30_000L
 
         fun newConnectionId(): String = UUID.randomUUID().toString()
 
@@ -42,16 +47,18 @@ class EdgeTtsClient {
             .replace("\"", "&quot;")
     }
 
-    /** 合成到 dest；失败重试 3 次（退避）。返回是否成功。 */
+    /** 合成到 dest；失败重试 3 次（退避）。返回是否成功。超时看门狗防止悬挂。 */
     suspend fun synthesize(text: String, voice: String, pitch: Int, rate: Int, dest: File): Boolean =
         withContext(Dispatchers.IO) {
             var ok = false
             repeat(3) { attempt ->
                 if (ok) return@withContext true
                 ok = try {
-                    runOnce(text, voice, pitch, rate, dest)
+                    withTimeoutOrNull(SINGLE_TIMEOUT_MS) {
+                        runOnce(text, voice, pitch, rate, dest)
+                    } ?: false
                 } catch (e: Exception) {
-                    Thread.sleep(1500L * (attempt + 1))
+                    delay(1500L * (attempt + 1)) // 可取消退避
                     false
                 }
             }

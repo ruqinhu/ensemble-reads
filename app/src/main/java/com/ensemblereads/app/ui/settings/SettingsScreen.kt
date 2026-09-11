@@ -24,16 +24,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.ensemblereads.app.data.SettingsManager
 import com.ensemblereads.app.data.repo.AppContainer
 import com.ensemblereads.app.player.ChapterSynthesizer
+import android.widget.Toast
 import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(container: AppContainer, synthesizer: ChapterSynthesizer?) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var key by remember { mutableStateOf("") }
     var cacheLimit by remember { mutableStateOf("100") }
     var speed by remember { mutableFloatStateOf(1f) }
@@ -73,6 +76,7 @@ fun SettingsScreen(container: AppContainer, synthesizer: ChapterSynthesizer?) {
                 container.settings.put(SettingsManager.KEY_DEEPSEEK_KEY, key)
                 container.settings.put(SettingsManager.KEY_CACHE_LIMIT, cacheLimit)
                 container.settings.put(SettingsManager.KEY_DEFAULT_SPEED, speed.toString())
+                Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
             }
         }, modifier = Modifier.fillMaxWidth()) { Text("保存") }
 

@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface BookDao {
@@ -36,7 +37,7 @@ interface RoleDao {
 
 @Dao
 interface SegmentDao {
-    @Insert suspend fun insertAll(segments: List<SegmentEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(segments: List<SegmentEntity>)
     @Query("SELECT * FROM segment WHERE chapterId=:chapterId ORDER BY segIndex") suspend fun byChapter(chapterId: Long): List<SegmentEntity>
     @Query("SELECT * FROM segment WHERE chapterId=:chapterId AND status='READY' ORDER BY segIndex") suspend fun readyByChapter(chapterId: Long): List<SegmentEntity>
     @Query("UPDATE segment SET status=:status WHERE id=:id") suspend fun setStatus(id: Long, status: String)
@@ -54,4 +55,5 @@ interface ParseCacheDao {
 interface SettingsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun put(entity: SettingsEntity)
     @Query("SELECT * FROM settings WHERE \"key\"=:key") suspend fun get(key: String): SettingsEntity?
+    @Query("SELECT * FROM settings") fun allFlow(): Flow<List<SettingsEntity>>
 }

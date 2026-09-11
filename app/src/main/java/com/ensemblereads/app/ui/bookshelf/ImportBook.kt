@@ -10,6 +10,7 @@ import com.ensemblereads.app.data.db.ChapterEntity
 import com.ensemblereads.app.data.repo.AppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.nio.charset.Charset
 
 /** 通过 SAF uri 导入 TXT/EPUB，解析入库，返回新 Book 的 id。 */
 suspend fun importBook(context: Context, uri: Uri, container: AppContainer): Long =
@@ -26,11 +27,11 @@ suspend fun importBook(context: Context, uri: Uri, container: AppContainer): Lon
         val isEpub = displayName.endsWith(".epub", true)
 
         val (title, chapters) = if (isEpub) {
-            val (t, chs) = EpubParser.read(bytes.inputStream())
+            val (t, chs) = EpubParser.read(bytes)
             t to chs
         } else {
             val enc = TxtParser.detectEncoding(bytes)
-            val text = String(bytes, Charset.forName(enc))
+            val text = String(bytes, Charset.forName(enc)).removePrefix("﻿")
             displayName.removeSuffix(".txt") to TxtParser.split(text)
         }
 

@@ -3,10 +3,11 @@ package com.ensemblereads.app.book
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.charset.Charset
 
 class TxtParserTest {
     @Test fun detectsGbkAndUtf8() {
-        val gbk = "第1章 测试\n正文".toByteArray(Charsets.forName("GB18030"))
+        val gbk = "第1章 测试\n正文".toByteArray(Charset.forName("GB18030"))
         assertTrue(TxtParser.detectEncoding(gbk).contains("GB", ignoreCase = true))
         val utf8 = "第1章 测试\n正文".toByteArray(Charsets.UTF_8)
         assertTrue(TxtParser.detectEncoding(utf8).contains("UTF-8", ignoreCase = true))
