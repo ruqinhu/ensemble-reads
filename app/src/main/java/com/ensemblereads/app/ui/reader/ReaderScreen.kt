@@ -102,11 +102,18 @@ fun ReaderScreen(
     onDeleteAnnotation: ((Long) -> Unit)? = null,
     // 书内搜索入口（E14）：非空时顶栏显示搜索图标
     onSearch: (() -> Unit)? = null,
+    // 手动播放（E7）：打开书不自动播放/缓存，点「播放」才启动
+    onStartPlayback: (() -> Unit)? = null,
+    // 目录抽屉内的缓存入口（供预合成离线听）
+    onCacheChapter: ((com.ensemblereads.app.data.db.ChapterEntity) -> Unit)? = null,
+    onCacheAll: (() -> Unit)? = null,
 ) {
     var cur by remember { mutableIntStateOf(-1) }
     // 沉浸式阅读：点击正文空白切换顶部/底部栏显隐
     var showBars by remember { mutableStateOf(true) }
     var showToc by remember { mutableStateOf(false) }
+    // 本回话是否已启动播放（切章后重置为 false → 播放按钮变为「点击启动」）
+    var playbackStarted by remember(chapterId) { mutableStateOf(false) }
     var annotating by remember { mutableStateOf<SegmentEntity?>(null) }
     var noteTarget by remember { mutableStateOf<SegmentEntity?>(null) }
     var noteText by remember { mutableStateOf("") }
@@ -149,7 +156,18 @@ fun ReaderScreen(
         },
         bottomBar = {
             if (showBars) controller?.let {
-                PlaybackBar(it, chapterId, onSeekToMs, onPrevChapter, onNextChapter)
+                PlaybackBar(
+                    controller = it,
+                    chapterId = chapterId,
+                    onSeekToMs = onSeekToMs,
+                    onPrevChapter = onPrevChapter,
+                    onNextChapter = onNextChapter,
+                    started = playbackStarted,
+                    onStartPlayback = {
+                        playbackStarted = true
+                        onStartPlayback?.invoke()
+                    },
+                )
             }
         },
     ) { pad ->
@@ -190,7 +208,10 @@ fun ReaderScreen(
                                 .background(bg, RoundedCornerShape(6.dp))
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                                 .combinedClickable(
-                                    onClick = { onPlayFromSeg?.invoke(seg.segIndex) },
+                                    onClick = {
+                                        playbackStarted = true
+                                        onPlayFromSeg?.invoke(seg.segIndex)
+                                    },
                                     onLongClick = { annotating = seg },
                                 ),
                             fontWeight = if (highlighted) FontWeight.SemiBold else null,
@@ -215,21 +236,40 @@ fun ReaderScreen(
         }
     }
 
-    // 阅读器内目录抽屉：快速切换章节，不必离开阅读页
+    // 阅读器内目录抽屉：快速切换章节 + 缓存入口（离线听）
     if (chapters != null && showToc) {
         ModalBottomSheet(onDismissRequest = { showToc = false }) {
-            Text("目录", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("目录", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                if (onCacheAll != null) TextButton(onClick = { onCacheAll?.invoke() }) { Text("缓存全部") }
+            }
             LazyColumn(Modifier.fillMaxHeight(0.7f)) {
                 items(chapters) { ch ->
-                    Text(
-                        ch.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (ch.id == currentChapterId) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.fillMaxWidth()
+                    val isCurrent = ch.id == currentChapterId
+                    Row(
+                        Modifier.fillMaxWidth()
                             .clickable { showToc = false; onOpenChapter?.invoke(ch) }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                    )
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            ch.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (ch.cached) {
+                            Text("已缓存 ✓", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                        } else if (onCacheChapter != null) {
+                            TextButton(onClick = { onCacheChapter?.invoke(ch) }) { Text("缓存") }
+                        }
+                    }
                 }
             }
         }
@@ -284,6 +324,8 @@ fun PlaybackBar(
     onSeekToMs: ((Long) -> Unit)? = null,
     onPrevChapter: (() -> Unit)? = null,
     onNextChapter: (() -> Unit)? = null,
+    started: Boolean = true,
+    onStartPlayback: (() -> Unit)? = null,
 ) {
     var speed by remember { mutableFloatStateOf(AudioPlaybackService.currentSpeed()) }
     var playing by remember { mutableStateOf(true) }
@@ -331,17 +373,21 @@ fun PlaybackBar(
             ) {
                 // 左/右 = 上一章/下一章
                 IconButton(onClick = { onPrevChapter?.invoke() }) { Icon(Icons.Default.SkipPrevious, contentDescription = "上一章") }
+                // 播放/暂停：未开始 → 点击启动（解析+合成+播放）；已开始 → 暂停/恢复
                 IconButton(onClick = {
-                    if (curSeg < 0) {
-                        Toast.makeText(context, "正在准备语音，请稍候", Toast.LENGTH_SHORT).show()
+                    if (!started) {
+                        onStartPlayback?.invoke()
+                    } else if (playing) {
+                        controller.pause(); playing = false
                     } else {
-                        if (playing) controller.pause() else controller.resume()
-                        playing = !playing
+                        controller.resume(); playing = true
                     }
                 }) {
+                    // 未开始 → 显示「播放」图标（点击启动）；已开始且播放中 → 暂停图标
+                    val showingPause = started && playing
                     Icon(
-                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (playing) "暂停" else "播放",
+                        if (showingPause) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (showingPause) "暂停" else "播放",
                     )
                 }
                 IconButton(onClick = { onNextChapter?.invoke() }) { Icon(Icons.Default.SkipNext, contentDescription = "下一章") }

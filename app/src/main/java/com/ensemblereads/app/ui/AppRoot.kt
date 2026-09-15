@@ -240,10 +240,11 @@ fun AppRoot(container: AppContainer) {
                 val segments by produceState<List<com.ensemblereads.app.data.db.SegmentEntity>>(key1 = chapterId, initialValue = emptyList()) {
                     value = container.segmentRepo.byChapter(chapterId)
                 }
-                // 全书章节列表：供上一章/下一章导航
-                val chaptersState by produceState<List<com.ensemblereads.app.data.db.ChapterEntity>>(key1 = bookId, initialValue = emptyList()) {
-                    value = container.chapterRepo.chapters(bookId)
-                }
+                // 全书章节列表：供上一章/下一章导航 + 目录抽屉缓存状态；cacheTick 缓存后刷新
+                var cacheTick by remember { mutableIntStateOf(0) }
+                val chaptersState by produceState<List<com.ensemblereads.app.data.db.ChapterEntity>>(
+                    key1 = bookId, key2 = cacheTick, initialValue = emptyList(),
+                ) { value = container.chapterRepo.chapters(bookId) }
                 // 当前章标注（书签/高亮/笔记），annTick 增删后刷新
                 var annTick by remember { mutableIntStateOf(0) }
                 val annotations by produceState<List<com.ensemblereads.app.data.db.AnnotationEntity>>(
@@ -292,6 +293,45 @@ fun AppRoot(container: AppContainer) {
                             scope.launch { container.annotationRepo.delete(id); annTick++ }
                         },
                         onSearch = { searchOpen = true },
+                        // 手动播放：用户点「播放」才启动（解析+合成+播放），打开书不自动播放/缓存
+                        onStartPlayback = {
+                            val c = ctrl
+                            val b = book
+                            val ch = chapter
+                            if (c != null && b != null && ch != null) {
+                                scope.launch {
+                                    try {
+                                        // 仅当前进度所在章续播 lastSegIndex；切到其他章从头播（修复切章后播放异常）
+                                        val fromSeg = if (ch.id == b.lastChapterId) b.lastSegIndex else 0
+                                        c.startFrom(b, ch, fromSeg)
+                                        // 合成完成后刷新分段，让正文/高亮跟读生效
+                                        segs = container.segmentRepo.byChapter(chapterId)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "朗读启动失败：${e.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            } else {
+                                Toast.makeText(context, "未配置 DeepSeek Key，仅显示正文；可在设置中配置后开启朗读", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        onCacheChapter = { ch ->
+                            val b = book
+                            if (b != null) {
+                                scope.launch {
+                                    runCatching { synthesizer?.ensureChapter(b, ch) }
+                                    cacheTick++
+                                }
+                            }
+                        },
+                        onCacheAll = {
+                            val b = book
+                            if (b != null) {
+                                scope.launch {
+                                    chaptersState.forEach { ch -> runCatching { synthesizer?.ensureChapter(b, ch) } }
+                                    cacheTick++
+                                }
+                            }
+                        },
                         onBack = { nav.popBackStack() },
                         onOpenChapters = { nav.navigate("chapters/$bookId") },
                         onOpenRoles = { nav.navigate("roles/$bookId/$chapterId") },
@@ -318,19 +358,13 @@ fun AppRoot(container: AppContainer) {
                             }
                         },
                     )
-                    // 以 (bookId, chapterId) 为 key：换书/换章时重跑启动逻辑；先停旧章再播新章，防残留拼接
+                    // 打开阅读器不自动播放/缓存（参考 Readest 手动 TTS）：
+                    // 仅重置旧播放状态；播放由用户点击「播放」触发，缓存在目录抽屉手动执行
                     LaunchedEffect(bookId, chapterId) {
                         if (ctrl == null) {
                             Toast.makeText(context, "未配置 DeepSeek Key，仅显示正文；可在设置中配置后开启朗读", Toast.LENGTH_LONG).show()
                         } else {
-                            try {
-                                ctrl.stopCurrent()
-                                ctrl.startFrom(book!!, chapter!!, book!!.lastSegIndex)
-                                // 合成完成后刷新分段，让正文/高亮跟读生效（在 try 内，Room 异常不逃逸）
-                                segs = container.segmentRepo.byChapter(chapterId)
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "朗读启动失败：${e.message}", Toast.LENGTH_LONG).show()
-                            }
+                            ctrl.stopCurrent()
                         }
                     }
                 }
