@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -66,7 +65,7 @@ fun RolesScreen(
                 supportingContent = {
                     Text(
                         when {
-                            name == RoleAllocator.NARRATOR -> "旁白(自动)"
+                            name == RoleAllocator.NARRATOR -> role?.let { VOICE_LABELS[it.voice] ?: it.voice } ?: "旁白(自动)"
                             role != null -> VOICE_LABELS[role.voice] ?: role.voice
                             else -> "未分配 ⚠"
                         }
@@ -74,8 +73,8 @@ fun RolesScreen(
                 },
                 trailingContent = { Text("$count 次") },
                 modifier = Modifier.clickable {
-                    // 旁白自动分配；其余角色（含已分配）均可改音色
-                    if (name != RoleAllocator.NARRATOR) editing = name
+                    // 所有角色（含旁白）均可改音色；旁白未配置时保持自动
+                    editing = name
                 },
             )
         }
@@ -85,25 +84,19 @@ fun RolesScreen(
     }
 
     editing?.let { name ->
-        AlertDialog(
-            onDismissRequest = { editing = null },
-            title = { Text("为「$name」选择音色") },
-            text = {
-                Column {
-                    VOICE_LABELS.forEach { (id, label) ->
-                        TextButton(onClick = {
-                            scope.launch {
-                                container.roleRepo.upsert(
-                                    RoleEntity(bookId = bookId, roleName = name, voice = id))
-                                roles = container.roleRepo.byBook(bookId) // 立即刷新列表
-                                editing = null
-                                onRolesChanged()
-                            }
-                        }, modifier = Modifier.fillMaxWidth()) { Text(label) }
-                    }
+        VoicePickerDialog(
+            title = "为「$name」选择音色",
+            fallbackVoices = VOICE_LABELS,
+            onSelect = { voiceId ->
+                scope.launch {
+                    container.roleRepo.upsert(
+                        RoleEntity(bookId = bookId, roleName = name, voice = voiceId))
+                    roles = container.roleRepo.byBook(bookId) // 立即刷新列表
+                    editing = null
+                    onRolesChanged()
                 }
             },
-            confirmButton = { TextButton(onClick = { editing = null }) { Text("取消") } },
+            onDismiss = { editing = null },
         )
     }
 }

@@ -1,6 +1,8 @@
 package com.ensemblereads.app.player
 
+import android.media.MediaMetadataRetriever
 import com.ensemblereads.app.data.SettingsManager
+import com.ensemblereads.app.debug.RequestLogger
 import com.ensemblereads.app.data.db.BookEntity
 import com.ensemblereads.app.data.db.ChapterEntity
 import com.ensemblereads.app.data.db.ParseCacheEntity
@@ -8,12 +10,16 @@ import com.ensemblereads.app.data.db.SegmentEntity
 import com.ensemblereads.app.data.repo.AppContainer
 import com.ensemblereads.app.tts.Segment
 import com.ensemblereads.app.tts.TtsEngine
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -58,14 +64,24 @@ class ChapterSynthesizer(
         onReady: ((SegmentEntity) -> Unit)? = null,
     ): List<SegmentEntity> = withChapterLock(chapter.id) {
         val existing = container.segmentRepo.byChapter(chapter.id)
+        RequestLogger.log("合成", "章节 ${chapter.id} 开始（已有段 ${existing.size}，文本${chapter.content.length}字符）")
         var segments = existing
         if (existing.isEmpty()) {
-            val cached = container.db.parseCacheDao().byChapter(chapter.id)
-            val parsed: List<Segment> = if (cached != null) {
+            // 只认当前版本缓存：旧版（version=1，未段合并）自动失效重解析
+            val cached = container.db.parseCacheDao().byChapterVersioned(chapter.id, ParseCacheEntity.CURRENT_VERSION)
+            val raw: List<Segment> = if (cached != null) {
                 jsonToSegments(cached.segmentsJson)
             } else {
-                engine.parseSegments(chapter.id, chapter.content)
+                try {
+                    engine.parseSegments(chapter.id, chapter.content)
+                } catch (e: Exception) {
+                    // 解析失败降级：不整章报错，改为按句切成旁白段，保证仍可朗读（无角色区分）
+                    android.util.Log.w("EnsembleReads", "DeepSeek 解析失败降级为旁白段: ${e.javaClass.simpleName}: ${e.message}")
+                    fallbackSegments(chapter.content)
+                }
             }
+            // 长章节段合并：把 1000+ 短段压到 ≤400 段，降低合成量、校正时长估算
+            val parsed = SegmentMerger.merge(raw)
             segments = parsed.mapIndexed { i, s ->
                 SegmentEntity(
                     chapterId = chapter.id, segIndex = i, speaker = s.speaker, text = s.text,
@@ -78,34 +94,56 @@ class ChapterSynthesizer(
         val roles = container.roleRepo.byBook(book.id).associateBy { it.roleName }
         val voices = engine.allocateVoices(segments.map { it.toTtsSegment() }, roles)
         val ready = mutableListOf<SegmentEntity>()
-        for (seg in segments.filter { it.segIndex >= fromSeg }) {
-            if (seg.status == SegmentEntity.STATUS_READY) {
-                ready.add(seg)
-                safeOnReady(onReady, seg)
-                continue
+
+        // 起始段越界处理：段合并(A2)会改变 segIndex 数量，Book.lastSegIndex 可能是合并前的旧值。
+        // 越界时从头播（0），而不是钳到末段（否则只播一段就自停）；负数取 0。
+        val safeFrom = if (segments.isEmpty() || fromSeg > segments.last().segIndex) 0 else fromSeg.coerceAtLeast(0)
+
+        // 并行合成（Semaphore 限 PARALLEL_SYNTHESIS 路，对应 Edge TTS 服务端并发上限）：
+        // 所有待合成段并发跑，但派发用 CompletableDeferred 按 segIndex 顺序门控——
+        // 前面的段未完成就等，完成即回调，保证边合成边播放的顺序与现状一致。
+        val semaphore = Semaphore(PARALLEL_SYNTHESIS)
+        coroutineScope {
+            val deferred = Array(segments.size) { CompletableDeferred<SegmentEntity?>() }
+            segments.forEachIndexed { i, seg ->
+                if (seg.segIndex < safeFrom) { deferred[i].complete(null); return@forEachIndexed }
+                if (seg.status == SegmentEntity.STATUS_READY) { deferred[i].complete(seg); return@forEachIndexed }
+                val v = voices[seg.speaker] ?: run { deferred[i].complete(null); return@forEachIndexed }
+                val dest = segFile(book.id, chapter.id, seg.segIndex)
+                chapterDir(book.id, chapter.id).mkdirs()
+                launch(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        var updated: SegmentEntity? = null
+                        try {
+                            container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_SYNTHESIZING)
+                            engine.synthesize(seg.text, v, dest)
+                            val dur = readDurationMs(dest)
+                            container.segmentRepo.markReady(seg.id, dest.absolutePath, System.currentTimeMillis(), dur)
+                            updated = seg.copy(
+                                status = SegmentEntity.STATUS_READY,
+                                audioPath = dest.absolutePath,
+                                cachedAt = System.currentTimeMillis(),
+                                durationMs = dur,
+                            )
+                        } catch (e: Exception) {
+                            container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_FAILED)
+                        }
+                        deferred[i].complete(updated)
+                    }
+                }
             }
-            val v = voices[seg.speaker] ?: continue
-            val dest = segFile(book.id, chapter.id, seg.segIndex)
-            chapterDir(book.id, chapter.id).mkdirs()
-            var updated: SegmentEntity? = null
-            try {
-                container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_SYNTHESIZING)
-                engine.synthesize(seg.text, v, dest)
-                container.segmentRepo.markReady(seg.id, dest.absolutePath, System.currentTimeMillis())
-                updated = seg.copy(
-                    status = SegmentEntity.STATUS_READY,
-                    audioPath = dest.absolutePath,
-                    cachedAt = System.currentTimeMillis(),
-                )
-                ready.add(updated)
-            } catch (e: Exception) {
-                container.segmentRepo.setStatus(seg.id, SegmentEntity.STATUS_FAILED)
+            // 顺序派发：按 segIndex 逐个 await；失败段为 null 直接跳过
+            for (i in segments.indices) {
+                val r = deferred[i].await()
+                if (r != null) {
+                    ready.add(r)
+                    safeOnReady(onReady, r) // 播放器异常移出合成 try/catch：不误标失败、不打断后续合成
+                }
             }
-            // onReady 移出合成 try/catch：播放器异常不再被误标为合成失败，也不打断后续合成
-            updated?.let { safeOnReady(onReady, it) }
         }
         container.chapterRepo.setCached(chapter.id, container.segmentRepo.readyByChapter(chapter.id).isNotEmpty())
         evictIfNeeded(book)
+        RequestLogger.log("合成", "章节 ${chapter.id} 完成（就绪 ${ready.size} 段）")
         ready
     }
 
@@ -166,12 +204,35 @@ class ChapterSynthesizer(
         container.chapterRepo.setCached(chapter.id, false)
     }
 
+    /**
+     * 强制重解析某章（删除段记录 + 解析缓存 + 音频目录，再按新逻辑重新解析合成）。
+     * 用于段合并/角色识别算法升级后对既有书一次性重解析。调用方应先暂停播放。
+     */
+    suspend fun reparseChapter(book: BookEntity, chapter: ChapterEntity) {
+        withChapterLock(chapter.id) {
+            container.segmentRepo.deleteByChapter(chapter.id)
+            container.db.parseCacheDao().deleteByChapter(chapter.id)
+            chapterDir(book.id, chapter.id).deleteRecursively()
+            container.chapterRepo.setCached(chapter.id, false)
+        }
+        ensureChapter(book, chapter, 0, null)
+    }
+
     private suspend fun cacheLimit(): Int =
         (container.settings.get(SettingsManager.KEY_CACHE_LIMIT) ?: SettingsManager.DEFAULT_CACHE_LIMIT)
             .toIntOrNull() ?: 100
 
     private suspend fun cachedCount(chapters: List<ChapterEntity>): Int =
         chapters.count { it.cached && container.segmentRepo.readyByChapter(it.id).isNotEmpty() }
+
+    /** 解析失败降级：把原文按换行/句末标点切成旁白段，保证整章仍可朗读。 */
+    private fun fallbackSegments(content: String): List<Segment> {
+        val parts = content.split(Regex("\\n+|(?<=[。！？！？])"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return listOf(Segment("旁白", content))
+        return parts.map { Segment("旁白", it) }
+    }
 
     private fun jsonToSegments(json: String): List<Segment> = runCatching {
         val arr = JSONArray(json)
@@ -191,7 +252,57 @@ class ChapterSynthesizer(
         }
         return arr.toString()
     }
+
+    /** 读 mp3 实际时长(ms)；失败返回 0（不阻塞合成成功）。 */
+    private fun readDurationMs(file: File): Long = try {
+        val r = MediaMetadataRetriever()
+        try {
+            r.setDataSource(file.absolutePath)
+            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } finally {
+            runCatching { r.release() }
+        }
+    } catch (e: Exception) {
+        0L
+    }
+
+    /**
+     * 章内各段时长(ms)，与 byChapter 顺序对齐：就绪段用实测值，
+     * 未就绪段按本书就绪段的平均字速估算（无实测样本时退化为兜底字速）。
+     * 供整章进度条的总时长与「章内时间 → 段」定位。
+     */
+    suspend fun segmentDurationsMs(chapterId: Long): List<Long> {
+        val segs = container.segmentRepo.byChapter(chapterId)
+        if (segs.isEmpty()) return emptyList()
+        val ready = segs.filter { it.status == SegmentEntity.STATUS_READY && it.durationMs > 0 }
+        val msPerChar = if (ready.isNotEmpty()) {
+            ready.sumOf { it.durationMs }.toDouble() / ready.sumOf { it.text.length }.coerceAtLeast(1)
+        } else DEFAULT_MS_PER_CHAR
+        return segs.map { if (it.durationMs > 0) it.durationMs else (it.text.length * msPerChar).toLong() }
+    }
+
+    /** 整章总时长(ms)，含未就绪段估算。 */
+    suspend fun chapterTotalMs(chapterId: Long): Long = segmentDurationsMs(chapterId).sum()
+
+    /** 章内时间(ms) → (segIndex, 段内偏移ms)，供进度条跨段 seek。 */
+    suspend fun segAtMs(chapterId: Long, totalMs: Long): Pair<Int, Long> {
+        val segs = container.segmentRepo.byChapter(chapterId)
+        val durs = segmentDurationsMs(chapterId)
+        if (segs.isEmpty()) return 0 to 0L
+        var acc = 0L
+        for (i in durs.indices) {
+            if (totalMs < acc + durs[i]) return segs[i].segIndex to (totalMs - acc).coerceAtLeast(0)
+            acc += durs[i]
+        }
+        return segs.last().segIndex to durs.last()
+    }
 }
+
+/** 章节内并发合成上限（Edge TTS 服务端限制，参考 VeloVoice 的 4 线程并发）。 */
+private const val PARALLEL_SYNTHESIS = 4
+
+/** 未就绪段时长兜底估算字速：无实测参考时按约 4.5 字/秒（220ms/字）。 */
+private const val DEFAULT_MS_PER_CHAR = 220.0
 
 /** 把持久化的分段转回 tts.Segment（保留特征）。 */
 fun SegmentEntity.toTtsSegment() = Segment(speaker, text, gender, age, tone)

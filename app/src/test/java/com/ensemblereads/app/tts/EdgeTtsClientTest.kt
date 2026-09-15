@@ -24,4 +24,24 @@ class EdgeTtsClientTest {
         val ssml = EdgeTtsClient.buildSsml("x", "zh-CN-YunxiNeural", -5, 0)
         assertTrue(ssml.contains("pitch='-5%'"))
     }
+
+    @Test fun parseVoiceListParsesFullList() {
+        val json = """[{"Name":"Microsoft Server Speech Text to Speech Voice (zh-CN, XiaoxiaoNeural)","ShortName":"zh-CN-XiaoxiaoNeural","Gender":"Female","Locale":"zh-CN"},{"Name":"Microsoft Server Speech Text to Speech Voice (zh-CN, YunxiNeural)","ShortName":"zh-CN-YunxiNeural","Gender":"Male","Locale":"zh-CN"}]"""
+        val voices = EdgeTtsClient().parseVoiceList(json)
+        assertTrue(voices.size == 2)
+        assertTrue(voices[0].id == "zh-CN-XiaoxiaoNeural")
+        assertTrue(voices[0].gender == "Female")
+        assertTrue(voices[1].id == "zh-CN-YunxiNeural")
+    }
+
+    @Test fun parseVoiceListSkipsBadEntries() {
+        val json = """[{"ShortName":"zh-CN-YunxiNeural","Locale":"zh-CN"},{"Locale":"no-name"},{"Gender":"Male"}]"""
+        val voices = EdgeTtsClient().parseVoiceList(json)
+        assertTrue(voices.size == 1)
+        assertTrue(voices[0].id == "zh-CN-YunxiNeural")
+    }
+
+    @Test fun parseVoiceListEmptyOnGarbage() {
+        assertTrue(EdgeTtsClient().parseVoiceList("not json").isEmpty())
+    }
 }

@@ -11,6 +11,12 @@ class SettingsManager(private val dao: SettingsDao) {
         const val KEY_DEFAULT_SPEED = "default_speed"
         const val KEY_CACHE_LIMIT = "cache_limit"
         const val DEFAULT_CACHE_LIMIT = "100"
+        const val KEY_PARSE_CHUNK = "parse_chunk"
+        const val DEFAULT_PARSE_CHUNK = "5000"
+        const val KEY_FONT_SIZE = "reader_font_size"
+        const val KEY_LINE_HEIGHT = "reader_line_height"
+        const val KEY_FONT_FAMILY = "reader_font_family"
+        const val KEY_THEME = "theme"
     }
     suspend fun get(key: String): String? {
         val raw = dao.get(key)?.value ?: return null
@@ -28,4 +34,10 @@ class SettingsManager(private val dao: SettingsDao) {
             if (e.key == KEY_DEEPSEEK_KEY) e.copy(value = KeyStoreCipher.decrypt(e.value) ?: e.value) else e
         }
     }
+
+    /** 原始值读取（含密文），供备份导出。 */
+    suspend fun allRaw(): List<SettingsEntity> = dao.all()
+
+    /** 原始值写入（不做加解密），供备份导入合并密文。 */
+    suspend fun putRaw(key: String, value: String) = dao.put(SettingsEntity(key, value))
 }

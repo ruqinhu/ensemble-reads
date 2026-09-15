@@ -11,8 +11,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -25,6 +27,8 @@ fun ChaptersScreen(
     chapters: List<ChapterEntity>,
     onOpen: (ChapterEntity) -> Unit,
     onBack: () -> Unit,
+    onCacheAll: () -> Unit,
+    onCacheOne: (ChapterEntity) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -33,6 +37,10 @@ fun ChaptersScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
                 },
+                actions = {
+                    // 批量缓存全部章节（参考 Readest 章节下载/缓存）
+                    TextButton(onClick = onCacheAll) { Text("缓存全部") }
+                },
             )
         },
     ) { pad ->
@@ -40,6 +48,17 @@ fun ChaptersScreen(
             items(chapters) { ch ->
                 ListItem(
                     headlineContent = { Text(ch.title) },
+                    supportingContent = {
+                        if (ch.cached) Text("已缓存", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary)
+                    },
+                    trailingContent = {
+                        if (ch.cached) {
+                            Text("✓", color = MaterialTheme.colorScheme.primary)
+                        } else {
+                            TextButton(onClick = { onCacheOne(ch) }) { Text("缓存") }
+                        }
+                    },
                     modifier = Modifier.clickable { onOpen(ch) },
                 )
             }

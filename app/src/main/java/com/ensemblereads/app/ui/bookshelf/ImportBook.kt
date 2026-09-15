@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.ensemblereads.app.book.EpubParser
+import com.ensemblereads.app.book.MdParser
+import com.ensemblereads.app.book.PdfParser
 import com.ensemblereads.app.book.TxtParser
 import com.ensemblereads.app.data.db.BookEntity
 import com.ensemblereads.app.data.db.ChapterEntity
@@ -29,21 +31,35 @@ suspend fun importBook(context: Context, uri: Uri, container: AppContainer): Lon
 
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: error("无法打开文件")
-        val isEpub = displayName.endsWith(".epub", true)
+        val lower = displayName.lowercase()
 
-        val (title, chapters) = if (isEpub) {
-            val (t, chs) = EpubParser.read(bytes)
-            t to chs
-        } else {
-            val enc = TxtParser.detectEncoding(bytes)
-            val text = String(bytes, Charset.forName(enc)).removePrefix("﻿")
-            displayName.removeSuffix(".txt") to TxtParser.split(text)
+        // 按扩展名分派解析器：EPUB / PDF / Markdown / TXT
+        val (title, chapters, format) = when {
+            lower.endsWith(".epub") -> {
+                val (t, chs) = EpubParser.read(bytes)
+                Triple(t, chs, "EPUB")
+            }
+            lower.endsWith(".pdf") -> {
+                val (t, chs) = PdfParser.read(context, bytes)
+                Triple(t, chs, "PDF")
+            }
+            lower.endsWith(".md") || lower.endsWith(".markdown") -> {
+                val enc = TxtParser.detectEncoding(bytes)
+                val text = String(bytes, Charset.forName(enc))
+                val (t, chs) = MdParser.parse(text)
+                Triple(t, chs, "MD")
+            }
+            else -> {
+                val enc = TxtParser.detectEncoding(bytes)
+                val text = String(bytes, Charset.forName(enc)).removePrefix("﻿")
+                Triple(displayName.removeSuffix(".txt"), TxtParser.split(text), "TXT")
+            }
         }
 
         val book = BookEntity(
             title = title.ifEmpty { displayName },
             filePath = uri.toString(),
-            format = if (isEpub) "EPUB" else "TXT",
+            format = format,
             chapterCount = chapters.size,
             createdAt = System.currentTimeMillis(),
         )

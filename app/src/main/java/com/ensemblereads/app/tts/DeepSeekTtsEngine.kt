@@ -4,8 +4,11 @@ import com.ensemblereads.app.data.db.RoleEntity
 import java.io.File
 
 /** 直连实现：DeepSeek 解析 + RoleAllocator 分配 + Edge TTS 合成。 */
-class DeepSeekTtsEngine(private val apiKey: String) : TtsEngine {
-    private val deepseek = DeepSeekClient(apiKey)
+class DeepSeekTtsEngine(
+    private val apiKey: String,
+    private val chunkChars: Int = DeepSeekClient.DEFAULT_CHUNK_CHARS,
+) : TtsEngine {
+    private val deepseek = DeepSeekClient(apiKey, chunkChars = chunkChars)
     private val edge = EdgeTtsClient()
 
     override suspend fun parseSegments(chapterId: Long, text: String): List<Segment> =

@@ -7,3 +7,12 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
+
+# 参考开源项目克隆（调研用，不入库）
+.refs/
+
+# Git Bash 崩溃转储（本地环境产物，不入库）
+*.stackdump
+
+# 本地测试书籍与代理脚本（模拟器联网用，不入库）
+test-books/

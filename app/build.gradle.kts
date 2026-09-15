@@ -29,6 +29,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.media:media:1.7.0") // MediaStyle / MediaSessionCompat.Token
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
@@ -43,12 +44,15 @@ dependencies {
     // Media3
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
+    implementation("androidx.media3:media3-session:1.4.1")
     // Network / TTS
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.json:json:20240303")
     // EPUB 解析：epublib 在 Maven Central 不可用、JitPack 构建失败，改为自写解析（JDK zip + Jsoup）
     implementation("org.jsoup:jsoup:1.17.2")
+    // PDF 文本抽取（纯 Java，Apache PDFBox 的 Android 维护分支；只需文本层，不渲染）
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // Test
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

@@ -7,8 +7,9 @@ import androidx.room.RoomDatabase
     entities = [
         BookEntity::class, ChapterEntity::class, RoleEntity::class,
         SegmentEntity::class, ParseCacheEntity::class, SettingsEntity::class,
+        AnnotationEntity::class, ReadingStatsEntity::class,
     ],
-    version = 2,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -17,5 +18,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun roleDao(): RoleDao
     abstract fun segmentDao(): SegmentDao
     abstract fun parseCacheDao(): ParseCacheDao
+    abstract fun annotationDao(): AnnotationDao
+    abstract fun readingStatsDao(): ReadingStatsDao
     abstract fun settingsDao(): SettingsDao
 }

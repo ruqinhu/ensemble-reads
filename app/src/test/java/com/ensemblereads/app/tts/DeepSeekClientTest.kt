@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -71,5 +72,20 @@ class DeepSeekClientTest {
         } finally {
             server.shutdown()
         }
+    }
+
+    @Test fun buildChunkUserContentAppendsContinuation() {
+        val base = buildChunkUserContent("正文", null)
+        assertTrue(base.contains("正文"))
+        assertTrue(!base.contains("前文提示"))
+        val withPrev = buildChunkUserContent("正文", "张羽")
+        assertTrue(withPrev.contains("正文"))
+        assertTrue(withPrev.contains("张羽"))
+        assertTrue(withPrev.contains("前文提示"))
+    }
+
+    @Test fun buildChunkUserContentIgnoresBlankSpeaker() {
+        val s = buildChunkUserContent("正文", "  ")
+        assertTrue(!s.contains("前文提示"))
     }
 }
